@@ -29,9 +29,10 @@ def plot_trajectories(com, res, max_ic=5, dpi=150):
         ax[1, c].set_xlabel('time')
         ax[1, c].grid(True, ls='--', alpha=0.3)
     ax[0, 0].set_ylabel(f'{n - 1} fully observed species\n(dots: data, dashed: PINN)')
-    ax[1, 0].set_ylabel(f'sparse species (sp{h + 1})')
+    ax[1, 0].set_ylabel(f"{'sparse' if len(idx) else 'hidden'} species (sp{h + 1})")
     ax[1, 0].legend(fontsize=7, loc='best')
-    fig.suptitle(f"{n} species; species {h + 1} measured at {len(idx)} time point(s) per trajectory; noise std {res['cfg']['noise_std']}", fontsize=11)
+    what = f"measured at {len(idx)} time point(s) per trajectory" if len(idx) else "never measured"
+    fig.suptitle(f"{n} species; species {h + 1} {what}; noise std {res['cfg']['noise_std']}", fontsize=11)
     fig.tight_layout()
     return fig
 
@@ -54,7 +55,7 @@ def plot_matrices(com, res, dpi=150):
     involves_h = (np.arange(n)[:, None] == h) | (np.arange(n)[None, :] == h)
     ax[2].plot([-vmax, vmax], [-vmax, vmax], color='gray', lw=0.8)
     ax[2].scatter(com['A'][off & ~involves_h], res['A'][off & ~involves_h], c='#2c3e50', s=28, label='between fully observed species')
-    ax[2].scatter(com['A'][off & involves_h], res['A'][off & involves_h], c='#c0392b', s=28, label='involving the sparse species (*)')
+    ax[2].scatter(com['A'][off & involves_h], res['A'][off & involves_h], c='#c0392b', s=28, label='involving the sparse / hidden species (*)')
     ax[2].set_xlabel('true A_ij (off-diagonal)'); ax[2].set_ylabel('inferred A_ij')
     ax[2].legend(fontsize=7); ax[2].grid(True, ls='--', alpha=0.3)
     fig.tight_layout()
