@@ -467,22 +467,37 @@ def exact_log_derivative(com):
     return com['r'] + com['X'] @ com['A'].T
 
 
+def _baseline_data(com, noise_std, noise_seed):
+    """
+    Data and log-derivatives used by the gradient-matching baselines.
+    Noise-free: exact derivatives (best case for any gradient-matching method).
+    Noisy: each time series is smoothed with a smoothing spline whose smoothing factor uses the true noise level
+    (s = n_t * sigma^2), and the derivative is taken from the spline. Returns (raw noisy data, smoothed data, d ln x/dt).
+    """
+    from scipy.interpolate import UnivariateSpline
+    t, X = com['t'], com['X'].copy()
+    if noise_std == 0:
+        return X, X.copy(), exact_log_derivative(com)
+    rng = np.random.RandomState(noise_seed)
+    X = X + rng.normal(0, 1, X.shape) * noise_std
+    Xs, L = np.zeros_like(X), np.zeros_like(X)
+    for k in range(X.shape[0]):
+        for i in range(X.shape[2]):
+            spl = UnivariateSpline(t, X[k, :, i], k=4, s=len(t) * noise_std ** 2)
+            Xs[k, :, i] = np.clip(spl(t), 1e-3, None)
+            L[k, :, i] = spl.derivative()(t) / Xs[k, :, i]
+    return X, Xs, L
+
+
 def baseline_ignore_hidden(com, hidden, noise_std=0.0, noise_seed=42):
     """
     Linear regression of d ln x_i/dt on [1, x_j (observed)] with the hidden species left out of the model.
-    Noise-free: uses the exact derivatives (best case for any gradient-matching method).
-    Noisy: derivatives from finite differences of the noisy data.
+    Derivatives: exact without noise, from smoothing splines with noise (see _baseline_data).
     Returns the relative error on the observed block of A, on r of the observed species, and the sign accuracy.
     """
     n = com['n_species']
     o = [i for i in range(n) if i != hidden]
-    X = com['X']
-    if noise_std > 0:
-        rng = np.random.RandomState(noise_seed)
-        X = X + rng.normal(0, 1, X.shape) * noise_std
-        L = np.gradient(X, com['t'], axis=1) / np.clip(X, 0.02, None)
-    else:
-        L = exact_log_derivative(com)
+    _, X, L = _baseline_data(com, noise_std, noise_seed)
     Xo = X[:, :, o].reshape(-1, n - 1)
     Lo = L[:, :, o].reshape(-1, n - 1)
     F = np.column_stack([np.ones(len(Xo)), Xo])
@@ -499,26 +514,20 @@ def baseline_interpolate_hidden(com, hidden, n_hidden_pts, noise_std=0.0, noise_
     """
     Gradient matching with the sparse species filled in by interpolation (PCHIP through its few points; a constant if
     only one point is available). d ln x_i/dt is regressed on [1, x_1 ... x_n] for every species.
-    Noise-free: exact derivatives for the fully observed species (best case); the sparse species' derivative comes from
-    its interpolant. Noisy: finite differences of the noisy data.
+    Fully observed species: exact derivatives without noise, smoothing splines with noise (see _baseline_data).
+    The sparse species' derivative comes from its interpolant.
     Returns the same metrics as evaluate().
     """
     from scipy.interpolate import PchipInterpolator
     n, t = com['n_species'], com['t']
-    X = com['X'].copy()
-    if noise_std > 0:
-        rng = np.random.RandomState(noise_seed)
-        X = X + rng.normal(0, 1, X.shape) * noise_std
-        L = np.gradient(X, t, axis=1) / np.clip(X, 0.02, None)
-    else:
-        L = exact_log_derivative(com)
+    X_raw, X, L = _baseline_data(com, noise_std, noise_seed)
     idx = np.where(observation_mask(len(t), n, hidden, n_hidden_pts)[:, hidden])[0]
     for k in range(X.shape[0]):
         if len(idx) == 1:
-            X[k, :, hidden] = X[k, idx[0], hidden]
+            X[k, :, hidden] = max(X_raw[k, idx[0], hidden], 1e-3)
             L[k, :, hidden] = 0.0
         else:
-            f = PchipInterpolator(t[idx], np.clip(X[k, idx, hidden], 1e-3, None))
+            f = PchipInterpolator(t[idx], np.clip(X_raw[k, idx, hidden], 1e-3, None))
             X[k, :, hidden] = f(t)
             L[k, :, hidden] = f.derivative()(t) / np.clip(X[k, :, hidden], 1e-3, None)
     F = np.column_stack([np.ones(X.shape[0] * X.shape[1]), X.reshape(-1, n)])
@@ -529,14 +538,8 @@ def baseline_interpolate_hidden(com, hidden, n_hidden_pts, noise_std=0.0, noise_
 
 def baseline_full(com, noise_std=0.0, noise_seed=42):
     """Gradient matching with every species fully observed (reference)."""
-    n, t = com['n_species'], com['t']
-    X = com['X'].copy()
-    if noise_std > 0:
-        rng = np.random.RandomState(noise_seed)
-        X = X + rng.normal(0, 1, X.shape) * noise_std
-        L = np.gradient(X, t, axis=1) / np.clip(X, 0.02, None)
-    else:
-        L = exact_log_derivative(com)
+    n = com['n_species']
+    _, X, L = _baseline_data(com, noise_std, noise_seed)
     F = np.column_stack([np.ones(X.shape[0] * X.shape[1]), X.reshape(-1, n)])
     coef = np.linalg.lstsq(F, L.reshape(-1, n), rcond=None)[0]
     return _param_metrics(com, coef[0], coef[1:].T, None)
@@ -560,3 +563,12 @@ def most_influential_species(com):
     A = np.abs(com['A']).copy()
     np.fill_diagonal(A, 0.0)
     return int(np.argmax(A.sum(axis=0)))
+
+
+def least_influential_species(com):
+    """Species with the smallest (non-zero) total outgoing interaction strength sum_i |A_ih| (i != h)."""
+    A = np.abs(com['A']).copy()
+    np.fill_diagonal(A, 0.0)
+    out = A.sum(axis=0)
+    out[out == 0] = np.inf
+    return int(np.argmin(out))
