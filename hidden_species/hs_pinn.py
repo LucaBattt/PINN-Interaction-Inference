@@ -572,3 +572,16 @@ def least_influential_species(com):
     out = A.sum(axis=0)
     out[out == 0] = np.inf
     return int(np.argmin(out))
+
+
+def train_with_restarts(com, n_restarts=3, **kwargs):
+    """
+    Trains from several random initialisations and keeps the run whose inferred model, integrated from the inferred
+    initial state, reproduces the available data best (metrics['sim_fit_rmse']). This criterion only uses the data,
+    so it can be applied to real experiments. A good run has sim_fit_rmse close to the noise level.
+    """
+    base_seed = kwargs.pop('seed', DEFAULTS['seed'])
+    runs = [train(com, seed=base_seed + i, **kwargs) for i in range(n_restarts)]
+    best = min(runs, key=lambda r: r['metrics']['sim_fit_rmse'])
+    best['all_sim_fit_rmse'] = [r['metrics']['sim_fit_rmse'] for r in runs]
+    return best
